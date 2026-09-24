@@ -1,0 +1,18 @@
+flowchart LR
+  subgraph intake[Intake]
+    W[Webhook / schedule] --> K[Derive idempotency key]
+    K --> E[(jobs<br/>enqueue once)]
+  end
+  subgraph work[Worker]
+    E --> C[Claim with SKIP LOCKED]
+    C --> R[Rate-limit slot]
+    R --> A[Call downstream API]
+    A -->|2xx| S[complete_job]
+    A -->|408/429/5xx| F[fail_job: backoff]
+    A -->|other 4xx| D[fail_job: dead]
+    F --> C
+  end
+  D --> Q[(dead_letters)]
+  X[Error Trigger workflow] --> Q
+  Q --> P[Review, fix, replay]
+  P --> E

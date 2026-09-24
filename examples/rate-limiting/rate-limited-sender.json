@@ -1,0 +1,277 @@
+{
+  "name": "Rate-limited sender",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Rate-limited sender\n\n**Origin:** New demonstration example.\n\n**Run it:** Execute it. Six messages go out at no more than 3 per 5-second window, even if you run several copies at once, because the budget lives in Postgres.\n\nConnect the Postgres nodes to a credential for the `resilience` database after import.",
+        "height": 300,
+        "width": 460,
+        "color": 7
+      },
+      "id": "e342c49f-cd54-55e9-8f93-511408389849",
+      "name": "About this example",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        -380
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "a07cb04e-072e-5fc2-879c-6a1e18733f2b",
+      "name": "Run example",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return Array.from({ length: 6 }, (_, i) => ({ json: { message_id: `msg-${$execution.id}-${i + 1}`, text: `message ${i + 1}` } }));\n"
+      },
+      "id": "bfc9ef76-b7c9-5ff4-8622-f498dc716551",
+      "name": "Messages to send",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "07c50721-9cb2-5a0f-8bc9-fd7270a69f58",
+      "name": "One at a time",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT *, $4::text AS message_id, $5::text AS text FROM resilience.try_acquire_rate_limit($1, $2::int, $3::int);",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ [ 'mock-api', 3, 5, $json.message_id, $json.text ] }}"
+        }
+      },
+      "id": "20df41e0-c1df-5603-8898-21f09b6db3fa",
+      "name": "Take rate-limit slot",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        660,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "4ce3ef8f-915b-5a43-a060-5aa315a3a9dd",
+              "leftValue": "={{ $json.allowed }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "ae3c49ba-f0cd-5662-8a93-4ef29cb583bf",
+      "name": "Slot available?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        880,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://mock-api:8080/deliver",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Idempotency-Key",
+              "value": "={{ $json.message_id }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: $json.text }) }}",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "7504a6e1-62f1-563e-9ac8-bac7f1cf45af",
+      "name": "Send message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "amount": "={{ Math.ceil(Number($json.retry_after_seconds)) }}",
+        "unit": "seconds"
+      },
+      "id": "a608fa88-9e3a-5993-8d20-1f95d2b99cd4",
+      "name": "Wait for next window",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1100,
+        220
+      ],
+      "webhookId": "14a3daf4-f6cf-53b1-896d-4edaa92eea20"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nreturn [{ json: { sent: items.length, status_codes: items.map(i => i.json.statusCode) } }];\n"
+      },
+      "id": "17893c3d-fadf-5c63-99a3-64775c67e82e",
+      "name": "Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        -140
+      ]
+    }
+  ],
+  "connections": {
+    "Run example": {
+      "main": [
+        [
+          {
+            "node": "Messages to send",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Messages to send": {
+      "main": [
+        [
+          {
+            "node": "One at a time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "One at a time": {
+      "main": [
+        [
+          {
+            "node": "Summary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Take rate-limit slot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Take rate-limit slot": {
+      "main": [
+        [
+          {
+            "node": "Slot available?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slot available?": {
+      "main": [
+        [
+          {
+            "node": "Send message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait for next window",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait for next window": {
+      "main": [
+        [
+          {
+            "node": "Take rate-limit slot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send message": {
+      "main": [
+        [
+          {
+            "node": "One at a time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "id": "RPrateLimited001",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

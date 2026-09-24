@@ -1,0 +1,320 @@
+{
+  "name": "Retry with exponential backoff",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Retry with exponential backoff\n\n**Origin:** New demonstration example.\n\n**Run it:** Execute the workflow. The mock API fails twice with 503, then succeeds. Change `simulate` to `permanent` to see the dead-letter path.\n\nConnect the Postgres nodes to a credential for the `resilience` database after import.",
+        "height": 300,
+        "width": 460,
+        "color": 7
+      },
+      "id": "cef8d8cb-bba7-56ea-a827-22d5a2723f6b",
+      "name": "About this example",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        -380
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "e5933052-1364-5aab-9131-8362cb299b05",
+      "name": "Run example",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Replace this with your real request. \"simulate\" tells the mock API how to behave:\n// fail_times:N, rate_limit_times:N, permanent, slow:S, or ok.\nreturn [{\n  json: {\n    idempotency_key: `retry-demo-${$execution.id}`,\n    body: { simulate: 'fail_times:2', note: 'retry demo' },\n    max_attempts: 4,\n    base_delay_seconds: 1,\n    max_delay_seconds: 8,\n  },\n}];\n"
+      },
+      "id": "c89c0713-1d1c-55de-b8a3-1c1e357f1ff8",
+      "name": "Build request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://mock-api:8080/deliver",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Idempotency-Key",
+              "value": "={{ $('Build request').first().json.idempotency_key }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Build request').first().json.body) }}",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "d2d2c3c1-b446-58ad-8fa3-4fce680e8dd0",
+      "name": "Call API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        0
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const status = Number($json.statusCode ?? 0);\nconst networkError = $json.error ? String($json.error.message ?? $json.error) : null;\n\n// 408, 425, 429 and 5xx are usually worth retrying. Other 4xx responses mean\n// the request itself is wrong, and sending it again will fail the same way.\nlet outcome = 'permanent';\nif (!networkError && status >= 200 && status < 300) outcome = 'success';\nelse if (networkError || [408, 425, 429].includes(status) || status >= 500) outcome = 'transient';\n\nconst retryAfter = Number($json.headers?.['retry-after']);\n\nconst req = $('Build request').first().json;\nconst attempt = $runIndex + 1;\n\n// Exponential backoff with equal jitter, never shorter than Retry-After.\nconst exp = Math.min(req.max_delay_seconds, req.base_delay_seconds * 2 ** (attempt - 1));\nconst delay = Math.max(Number.isFinite(retryAfter) ? retryAfter : 0, exp / 2 + Math.random() * (exp / 2));\n\nreturn {\n  json: {\n    attempt,\n    outcome,\n    status_code: status || null,\n    error: outcome === 'success' ? null : (networkError ?? `HTTP ${status}`),\n    retry: outcome === 'transient' && attempt < req.max_attempts,\n    delay_seconds: Math.round(delay * 10) / 10,\n    response: $json.body ?? null,\n  },\n};\n",
+        "mode": "runOnceForEachItem"
+      },
+      "id": "3028385f-85b0-5be5-9c19-29a4a73dbde1",
+      "name": "Evaluate attempt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "bd9d462b-9ffd-5fe1-b5d9-f1bf74607bc0",
+              "leftValue": "={{ $json.outcome }}",
+              "rightValue": "success",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "37e3cc47-7e90-5c51-9512-ce837beba841",
+      "name": "Succeeded?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        880,
+        0
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "c9e38b3a-6636-5bdb-8c1b-4a8eb44ba6c0",
+      "name": "Use response",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1100,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "1b486804-bad1-5060-9ab8-46c8fcca3ae3",
+              "leftValue": "={{ $json.retry }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "cbe86a25-7f8e-5ba5-9854-59b68d3f97ab",
+      "name": "Retry?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1100,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "amount": "={{ $json.delay_seconds }}",
+        "unit": "seconds"
+      },
+      "id": "b3cd6ee1-8368-56e1-b76c-e2afc659dc6f",
+      "name": "Back off",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1320,
+        20
+      ],
+      "webhookId": "2d3ebe26-66b5-58d1-9479-df7671dea593"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT resilience.record_dead_letter($1, $2, $3, $4, $5, NULLIF($6, '')::jsonb, NULLIF($7, '')) AS dead_letter_id;",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ [ $workflow.name, 'Call API', $execution.id, $json.error, $json.outcome === 'permanent' ? 'permanent' : 'transient', JSON.stringify($('Build request').first().json.body), $('Build request').first().json.idempotency_key ] }}"
+        }
+      },
+      "id": "1721516b-53de-5444-9afa-2618ddf82bc1",
+      "name": "Record dead letter",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1320,
+        220
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": {
+    "Run example": {
+      "main": [
+        [
+          {
+            "node": "Build request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build request": {
+      "main": [
+        [
+          {
+            "node": "Call API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call API": {
+      "main": [
+        [
+          {
+            "node": "Evaluate attempt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Evaluate attempt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate attempt": {
+      "main": [
+        [
+          {
+            "node": "Succeeded?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Succeeded?": {
+      "main": [
+        [
+          {
+            "node": "Use response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Retry?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retry?": {
+      "main": [
+        [
+          {
+            "node": "Back off",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record dead letter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Back off": {
+      "main": [
+        [
+          {
+            "node": "Call API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "id": "RPretryBackoff01",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

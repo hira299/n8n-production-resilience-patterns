@@ -1,0 +1,330 @@
+{
+  "name": "Budget guardrail with delta-gated alerts",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Budget guardrail with delta-gated alerts\n\n**Origin:** Derived from Hira Ahmed's Financial Profitability Guardrail workflow (public repo hira299/Financial-Profitability-Guardrail). The ClickUp source is replaced by the mock API, and state is saved before the alert gate runs; in the original, the upsert and the alert ran in parallel.\n\n**Run it:** Execute it twice. The first run alerts for tasks entering WARNING or CRITICAL; the second run sends nothing because no state changed. Point Fetch tasks at `/tasks?fail=1` to exercise the dead-letter branch.\n\nConnect the Postgres nodes to a credential for the `resilience` database after import.",
+        "height": 300,
+        "width": 460,
+        "color": 7
+      },
+      "id": "d9f6899b-2c9b-517e-9b02-49e7ffd0c5ae",
+      "name": "About this example",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        -380
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "a28a3cc3-acf0-5169-b04a-c39aa56486a4",
+      "name": "Run check",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://mock-api:8080/tasks",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "03dbd19c-f988-5087-82a3-c78f8e9a7b84",
+      "name": "Fetch tasks",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        0
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT resilience.record_dead_letter($1, $2, $3, $4, $5, NULLIF($6, '')::jsonb, NULLIF($7, '')) AS dead_letter_id;",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ [ $workflow.name, 'Fetch tasks', $execution.id, $json.error?.message ?? 'task source failed', 'transient', '', '' ] }}"
+        }
+      },
+      "id": "216f5810-aa91-578d-bc07-4e6a96abe2cf",
+      "name": "Log fetch failure (DLQ)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        440,
+        200
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Same job as the original Normalize_Payload node: flatten the source records\n// and convert tracked time from milliseconds to hours.\nconst results = [];\nfor (const item of $input.all()) {\n  for (const task of item.json.tasks ?? []) {\n    const trackedHours = (Number(task.time_spent_ms) || 0) / 3_600_000;\n    results.push({\n      json: {\n        task_id: String(task.id),\n        task_name: task.name,\n        budget_hours: Number(task.budget_hours) || 0,\n        tracked_hours: Math.round(trackedHours * 100) / 100,\n      },\n    });\n  }\n}\nreturn results;\n"
+      },
+      "id": "111a6adc-fbd7-5886-833b-24c5a62f4c09",
+      "name": "Normalize payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT entity_id AS task_id, state AS current_state FROM resilience.entity_state;",
+        "options": {
+          "queryBatching": "independently"
+        }
+      },
+      "id": "abe6032c-4b0b-57e5-ac05-8f7d8ebcf107",
+      "name": "Load previous states",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        660,
+        0
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// The core of the original workflow. A task with no stored state starts as NEW.\n// An alert is needed only when the state changed AND the new state is not HEALTHY,\n// so a task that stays CRITICAL does not alert on every run.\nconst tasks = $('Normalize payload').all().map(i => i.json);\nconst previous = new Map(\n  $input.all().filter(i => i.json.task_id).map(i => [i.json.task_id, i.json.current_state]),\n);\n\nreturn tasks.map(task => {\n  const previousState = previous.get(task.task_id) ?? 'NEW';\n  const percent = task.budget_hours > 0 ? (task.tracked_hours / task.budget_hours) * 100 : 0;\n\n  let newState = 'HEALTHY';\n  if (percent >= 100) newState = 'CRITICAL';\n  else if (percent >= 80) newState = 'WARNING';\n\n  return {\n    json: {\n      ...task,\n      burn_percent: Math.round(percent * 10) / 10,\n      previous_state: previousState,\n      new_state: newState,\n      requires_alert: newState !== previousState && newState !== 'HEALTHY',\n    },\n  };\n});\n"
+      },
+      "id": "48f26372-1d7b-523f-ad9f-bead37749b75",
+      "name": "Delta engine",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO resilience.entity_state (entity_id, state, metric, version, updated_at)\nVALUES ($1, $2, $3::numeric, 1, now())\nON CONFLICT (entity_id) DO UPDATE\nSET state      = EXCLUDED.state,\n    metric     = EXCLUDED.metric,\n    updated_at = now(),\n    version    = resilience.entity_state.version\n                 + CASE WHEN resilience.entity_state.state <> EXCLUDED.state THEN 1 ELSE 0 END\nRETURNING entity_id;",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ [ $json.task_id, $json.new_state, $json.burn_percent ] }}"
+        }
+      },
+      "id": "5fd99a51-0deb-5c34-9aa3-68183d8c9f6b",
+      "name": "Save state",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1100,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e3ded001-cb99-5284-b91e-2bd7ea6e8b57",
+              "leftValue": "={{ $('Delta engine').item.json.requires_alert }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "6b5fddac-2ed8-5bf2-bd48-93b1b33f452c",
+      "name": "Needs alert?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1320,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://mock-api:8080/deliver",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Idempotency-Key",
+              "value": "={{ 'budget-alert:' + $('Delta engine').item.json.task_id + ':' + $('Delta engine').item.json.new_state + ':' + $execution.id }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ task: $('Delta engine').item.json.task_name, from: $('Delta engine').item.json.previous_state, to: $('Delta engine').item.json.new_state, burn_percent: $('Delta engine').item.json.burn_percent }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "f85ba197-5ea2-5fc4-96bf-a4bd21444b68",
+      "name": "Send alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        -80
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT resilience.record_dead_letter($1, $2, $3, $4, $5, NULLIF($6, '')::jsonb, NULLIF($7, '')) AS dead_letter_id;",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ [ $workflow.name, 'Send alert', $execution.id, $json.error?.message ?? 'alert delivery failed', 'transient', JSON.stringify($('Delta engine').item.json), '' ] }}"
+        }
+      },
+      "id": "65e181c3-74e9-5b40-8241-7eb81320df96",
+      "name": "Log alert failure (DLQ)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1760,
+        80
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": {
+    "Run check": {
+      "main": [
+        [
+          {
+            "node": "Fetch tasks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch tasks": {
+      "main": [
+        [
+          {
+            "node": "Normalize payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log fetch failure (DLQ)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize payload": {
+      "main": [
+        [
+          {
+            "node": "Load previous states",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load previous states": {
+      "main": [
+        [
+          {
+            "node": "Delta engine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delta engine": {
+      "main": [
+        [
+          {
+            "node": "Save state",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save state": {
+      "main": [
+        [
+          {
+            "node": "Needs alert?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs alert?": {
+      "main": [
+        [
+          {
+            "node": "Send alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send alert": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Log alert failure (DLQ)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "id": "RPguardrailDelta",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

@@ -1,0 +1,203 @@
+{
+  "name": "Idempotent webhook intake",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Idempotent webhook intake\n\n**Origin:** New demonstration example.\n\n**Run it:** Activate it, then POST the same body twice to /webhook/resilience/intake with an Idempotency-Key header. The first call returns 202, the second 200 with duplicate=true.\n\nConnect the Postgres nodes to a credential for the `resilience` database after import.",
+        "height": 300,
+        "width": 460,
+        "color": 7
+      },
+      "id": "d3bba15e-baae-55c4-a3e7-985b499c7726",
+      "name": "About this example",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        -380
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "resilience/intake",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "0fa4d9f2-c533-5827-a3bc-1cb55240ff64",
+      "name": "Receive event",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "c7a4e0d2-4c1b-4f2a-9a55-2f1e6b9d8a31"
+    },
+    {
+      "parameters": {
+        "jsCode": "const headers = $json.headers ?? {};\nconst body = $json.body ?? {};\nconst fromHeader = String(headers['idempotency-key'] ?? '').trim();\n\n// Prefer a key the sender controls. Otherwise use the event's business identity.\n// Never use the arrival time or the execution ID: a retry would get a new key.\nconst key = fromHeader || (body.source && body.external_id ? `${body.source}:${body.external_id}` : '');\n\nreturn [{ json: { key, valid: key.length > 0 && key.length <= 200, payload: body } }];\n"
+      },
+      "id": "e65b8f3a-e3c4-5b4b-bd51-1cae4c9e38c7",
+      "name": "Derive idempotency key",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "38282bd4-c6df-53d5-bde6-1532c62cded5",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "214ead8c-04dd-5722-8f57-eafe8f5b4b0d",
+      "name": "Has key?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM resilience.enqueue_job($1, 'intake_event', $2::jsonb);",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ [ $json.key, JSON.stringify($json.payload) ] }}"
+        }
+      },
+      "id": "c55bdc6b-5a67-545a-aadd-6b1f1747e45a",
+      "name": "Enqueue once",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        660,
+        -80
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ job_id: $json.job_id, status: $json.job_status, duplicate: $json.duplicate }) }}",
+        "options": {
+          "responseCode": "={{ $json.duplicate ? 200 : 202 }}"
+        }
+      },
+      "id": "e2da6a98-ee8a-56c3-93e3-cf16e0c46301",
+      "name": "Respond accepted",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        880,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: 'Send an Idempotency-Key header, or source and external_id in the body.' }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "c83b0902-25e8-5b55-827c-be9c05537aef",
+      "name": "Respond missing key",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        120
+      ]
+    }
+  ],
+  "connections": {
+    "Receive event": {
+      "main": [
+        [
+          {
+            "node": "Derive idempotency key",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Derive idempotency key": {
+      "main": [
+        [
+          {
+            "node": "Has key?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has key?": {
+      "main": [
+        [
+          {
+            "node": "Enqueue once",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond missing key",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enqueue once": {
+      "main": [
+        [
+          {
+            "node": "Respond accepted",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "id": "RPidemIntake0001",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

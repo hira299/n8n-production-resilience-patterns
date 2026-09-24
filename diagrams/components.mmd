@@ -1,0 +1,29 @@
+flowchart TB
+  subgraph n8n[n8n]
+    I[Intake workflows<br/>webhook, schedule]
+    WK[Job worker<br/>schedule, every minute]
+    EH[Global error handler<br/>Error Trigger]
+    DG[Dead-letter digest<br/>daily]
+    RP[Replay workflow<br/>manual]
+  end
+  subgraph pg[PostgreSQL: resilience schema]
+    J[(jobs)]
+    JE[(job_events)]
+    DL[(dead_letters)]
+    RL[(rate_limit_windows)]
+    ES[(entity_state<br/>entity_transitions)]
+  end
+  API[Downstream APIs]
+
+  I -->|enqueue_job| J
+  I -->|apply_reading| ES
+  ES -->|alert job, same transaction| J
+  WK -->|claim / complete / fail| J
+  WK -->|try_acquire_rate_limit| RL
+  WK --> API
+  J -->|every transition| JE
+  J -->|fail_job: dead| DL
+  EH -->|record_dead_letter| DL
+  DG -->|read| DL
+  RP -->|replay_dead_letters| DL
+  RP -->|requeue| J

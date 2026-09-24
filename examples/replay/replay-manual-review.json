@@ -1,0 +1,235 @@
+{
+  "name": "Replay checks in manual review",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Replay checks in manual review\n\n**Origin:** Derived from Hira Ahmed's DLQ workflow for the AWS audit engine: it re-runs only rows marked MANUAL_REVIEW, resolving each one through a static allow-list rather than anything stored in the database.\n\n**Run it:** Run the checks workflow first, then execute this. The flaky dependency recovers to PASS; the broken one stays in MANUAL_REVIEW with its attempt count increased.\n\nConnect the Postgres nodes to a credential for the `resilience` database after import.",
+        "height": 300,
+        "width": 460,
+        "color": 7
+      },
+      "id": "f99357ec-9315-5fb8-a4eb-1b55882dbfc6",
+      "name": "About this example",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        -380
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "750148b1-e330-5ff8-888b-04770c128971",
+      "name": "Run example",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT check_name, attempts FROM resilience.check_results\nWHERE status = 'MANUAL_REVIEW' AND attempts < 5\nORDER BY checked_at;",
+        "options": {
+          "queryBatching": "independently"
+        }
+      },
+      "id": "fecf96d0-bf3b-5851-8598-d323c75570a6",
+      "name": "Rows needing review",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        220,
+        0
+      ],
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// The stored row supplies only a check name. What gets called always comes from\n// this map, so data in the table can never choose an arbitrary endpoint or command.\nconst ALLOWED = {\n  MFA_ENABLED: '/config/mfa',\n  LOGGING_ENABLED: '/config/logging',\n  PASSWORD_POLICY: '/config/password_policy',\n  FLAKY_DEPENDENCY: '/config/flaky',\n  BROKEN_DEPENDENCY: '/config/broken',\n};\nconst path = ALLOWED[$json.check_name];\nreturn { json: { check_name: $json.check_name, path: path ?? null, allowed: Boolean(path) } };\n",
+        "mode": "runOnceForEachItem"
+      },
+      "id": "abeadccf-e992-5dbe-aa8a-4f7366f6e980",
+      "name": "Resolve from allow-list",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "623173a9-ed5c-5bfe-a46f-380f962891b8",
+              "leftValue": "={{ $json.allowed }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "cbdc9a39-35f9-5456-aa94-c36dc4f3c817",
+      "name": "Allowed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'http://mock-api:8080' + $json.path }}",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "b5a98c37-6bde-5a07-8b6f-8362dfbf52dc",
+      "name": "Read configuration",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        -80
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Every response, including failures, becomes a verdict. PASS or FAIL only when\n// the response actually answers the question; everything else is MANUAL_REVIEW,\n// so a broken dependency can never be reported as compliant.\nconst check = $('Allowed?').item.json;\nconst status = Number($json.statusCode ?? 0);\nconst body = $json.body ?? {};\nconst transportError = $json.error ? String($json.error.message ?? $json.error) : null;\n\n// An expected \"not found\" is a meaningful answer, not a system failure.\nconst notFound = status === 404 && body.error === 'NoSuchEntity';\n\nlet verdict = 'MANUAL_REVIEW';\nlet evidence;\n\nif (transportError || status === 0 || status >= 500) {\n  evidence = `SYSTEM ERROR: ${transportError ?? 'HTTP ' + status}. Not evaluated.`;\n} else {\n  switch (check.check_name) {\n    case 'MFA_ENABLED':\n    case 'LOGGING_ENABLED':\n    case 'FLAKY_DEPENDENCY':\n    case 'BROKEN_DEPENDENCY':\n      if (status === 200 && typeof body.enabled === 'boolean') {\n        verdict = body.enabled ? 'PASS' : 'FAIL';\n        evidence = `enabled=${body.enabled}`;\n      } else {\n        evidence = `Unexpected response: HTTP ${status}`;\n      }\n      break;\n    case 'PASSWORD_POLICY':\n      if (notFound) { verdict = 'FAIL'; evidence = 'No password policy is configured.'; }\n      else if (status === 200) { verdict = 'PASS'; evidence = 'Password policy present.'; }\n      else evidence = `Unexpected response: HTTP ${status}`;\n      break;\n    default:\n      evidence = `No evaluation logic for ${check.check_name}.`;\n  }\n}\n\nreturn { json: { check_name: check.check_name, status: verdict, evidence, raw: { status_code: status || null, body } } };\n",
+        "mode": "runOnceForEachItem"
+      },
+      "id": "7cbb6c03-cbfe-5576-a9d8-2beea4982991",
+      "name": "Verdict",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO resilience.check_results (check_name, status, evidence, raw)\nVALUES ($1, $2, $3, $4::jsonb)\nON CONFLICT (check_name) DO UPDATE\nSET status = EXCLUDED.status, evidence = EXCLUDED.evidence, raw = EXCLUDED.raw,\n    attempts = resilience.check_results.attempts + 1, checked_at = now()\nRETURNING check_name, status, attempts;",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ [ $json.check_name, $json.status, $json.evidence, JSON.stringify($json.raw) ] }}"
+        }
+      },
+      "id": "15698f81-8be5-5515-a5ef-fd5117a7754d",
+      "name": "Save verdict",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1320,
+        -80
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": {
+    "Run example": {
+      "main": [
+        [
+          {
+            "node": "Rows needing review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rows needing review": {
+      "main": [
+        [
+          {
+            "node": "Resolve from allow-list",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve from allow-list": {
+      "main": [
+        [
+          {
+            "node": "Allowed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Allowed?": {
+      "main": [
+        [
+          {
+            "node": "Read configuration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read configuration": {
+      "main": [
+        [
+          {
+            "node": "Verdict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verdict": {
+      "main": [
+        [
+          {
+            "node": "Save verdict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "id": "RPreviewReplay01",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

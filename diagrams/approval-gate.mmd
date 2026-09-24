@@ -1,0 +1,9 @@
+stateDiagram-v2
+  [*] --> New: discovered (deduplicated by ID)
+  New --> AwaitingApproval: draft saved
+  AwaitingApproval --> Approved: person approves
+  AwaitingApproval --> Rejected: person rejects
+  Approved --> Sending: send workflow claims row
+  Sending --> Sent: send confirmed
+  Sending --> Approved: send failed, released for retry
+  Sent --> [*]

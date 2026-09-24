@@ -1,0 +1,11 @@
+stateDiagram-v2
+  [*] --> pending: enqueue_job (idempotent)
+  pending --> processing: claim_jobs (SKIP LOCKED, attempts + 1)
+  failed --> processing: claim_jobs, after next_attempt_at
+  processing --> succeeded: complete_job (lock owner only)
+  processing --> failed: fail_job, transient, attempts left
+  processing --> dead: fail_job, permanent or out of attempts
+  processing --> pending: release_job (throttled, attempt not spent)
+  processing --> failed: reclaim_stale_jobs (lock expired)
+  dead --> pending: replay_dead_letters
+  succeeded --> [*]

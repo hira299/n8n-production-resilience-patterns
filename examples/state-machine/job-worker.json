@@ -1,0 +1,390 @@
+{
+  "name": "Job worker",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Job worker\n\n**Origin:** New demonstration example. Same approach as the queue worker described in Hira Ahmed's Cloud Compliance case study (row-level locks, paced calls, exponential backoff), rebuilt here on the shared schema.\n\n**Run it:** Enqueue jobs (idempotent intake or SQL delta gate), then execute this workflow, or activate it to run every minute.\n\nConnect the Postgres nodes to a credential for the `resilience` database after import.",
+        "height": 300,
+        "width": 460,
+        "color": 7
+      },
+      "id": "220e39d7-1dfb-5b64-8eb4-c982b8a59e95",
+      "name": "About this example",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        -380
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "54a5b321-745e-52c8-a32a-992588753909",
+      "name": "Run now",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "b402b781-b96d-5de7-be43-37491e04ea1f",
+      "name": "Every minute",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// worker_id identifies this execution as the lock owner.\nreturn [{ json: {\n  worker_id: `n8n-exec-${$execution.id}`,\n  batch_size: 10,\n  lock_timeout: '5 minutes',\n  target_url: 'http://mock-api:8080/deliver',\n} }];\n"
+      },
+      "id": "9bf8a70c-376d-55a0-9ccd-f4153ad80397",
+      "name": "Worker config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT resilience.reclaim_stale_jobs($1::interval) AS reclaimed;",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ [ $json.lock_timeout ] }}"
+        }
+      },
+      "id": "07c04950-e97b-5f24-a92a-853ee5d89de5",
+      "name": "Recover stale jobs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        440,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM resilience.claim_jobs($1, $2::int);",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ [ $('Worker config').first().json.worker_id, $('Worker config').first().json.batch_size ] }}"
+        }
+      },
+      "id": "c9e679dd-430d-5e0c-94ca-ca5f37d6b4c6",
+      "name": "Claim jobs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "79ea7c12-ec62-5992-96fa-3c698e3e76ef",
+              "leftValue": "={{ $json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "number",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "2f073102-f222-56b1-9a70-5a2ea6d99bde",
+      "name": "Claimed a job?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        880,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Worker config').first().json.target_url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Idempotency-Key",
+              "value": "={{ $json.idempotency_key }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.payload) }}",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "f6a61fc7-6511-57e9-a930-680493499103",
+      "name": "Deliver",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        0
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const status = Number($json.statusCode ?? 0);\nconst networkError = $json.error ? String($json.error.message ?? $json.error) : null;\n\n// 408, 425, 429 and 5xx are usually worth retrying. Other 4xx responses mean\n// the request itself is wrong, and sending it again will fail the same way.\nlet outcome = 'permanent';\nif (!networkError && status >= 200 && status < 300) outcome = 'success';\nelse if (networkError || [408, 425, 429].includes(status) || status >= 500) outcome = 'transient';\n\nconst retryAfter = Number($json.headers?.['retry-after']);\n\nconst job = $('Claimed a job?').item.json;\n\nreturn {\n  json: {\n    job_id: job.id,\n    worker_id: $('Worker config').first().json.worker_id,\n    outcome,\n    error: outcome === 'success' ? null : (networkError ?? `HTTP ${status}: ${JSON.stringify($json.body ?? '').slice(0, 300)}`),\n    min_delay_seconds: Number.isFinite(retryAfter) ? retryAfter : null,\n    result: outcome === 'success' ? { status_code: status, body: $json.body ?? null } : null,\n  },\n};\n",
+        "mode": "runOnceForEachItem"
+      },
+      "id": "c751cd91-57fe-5d1b-888d-64780b556ce2",
+      "name": "Classify outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "72d46d39-bdfc-53a4-b4f3-84405760715c",
+              "leftValue": "={{ $json.outcome }}",
+              "rightValue": "success",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "aaaaa45f-39fd-589a-b179-3e1fee064fb0",
+      "name": "Succeeded?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1540,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT resilience.complete_job($1::bigint, $2, $3::jsonb) AS completed;",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ [ $json.job_id, $json.worker_id, JSON.stringify($json.result) ] }}"
+        }
+      },
+      "id": "3bacc157-3200-583d-9214-de5cfc28a146",
+      "name": "Mark succeeded",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1760,
+        -100
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM resilience.fail_job($1::bigint, $2, $3, $4, NULLIF($5::text, '')::numeric);",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ [ $json.job_id, $json.worker_id, $json.error, $json.outcome, String($json.min_delay_seconds ?? '') ] }}"
+        }
+      },
+      "id": "c651327a-5624-5507-b6f5-d722edeaf762",
+      "name": "Record failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1760,
+        100
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": {
+    "Run now": {
+      "main": [
+        [
+          {
+            "node": "Worker config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every minute": {
+      "main": [
+        [
+          {
+            "node": "Worker config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Worker config": {
+      "main": [
+        [
+          {
+            "node": "Recover stale jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recover stale jobs": {
+      "main": [
+        [
+          {
+            "node": "Claim jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim jobs": {
+      "main": [
+        [
+          {
+            "node": "Claimed a job?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claimed a job?": {
+      "main": [
+        [
+          {
+            "node": "Deliver",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deliver": {
+      "main": [
+        [
+          {
+            "node": "Classify outcome",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Classify outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify outcome": {
+      "main": [
+        [
+          {
+            "node": "Succeeded?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Succeeded?": {
+      "main": [
+        [
+          {
+            "node": "Mark succeeded",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "RPerrorHandler01"
+  },
+  "pinData": {},
+  "id": "RPjobWorker00001",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

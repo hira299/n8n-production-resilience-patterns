@@ -1,0 +1,121 @@
+{
+  "name": "Replay dead letters",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Replay dead letters\n\n**Origin:** New demonstration example.\n\n**Run it:** Fix the cause first. Then edit Replay selection and execute. Requeued jobs are picked up by the job worker; a successful run resolves the dead letter.\n\nConnect the Postgres nodes to a credential for the `resilience` database after import.",
+        "height": 300,
+        "width": 460,
+        "color": 7
+      },
+      "id": "012d3105-815f-5e77-a825-8594e74ba2a9",
+      "name": "About this example",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        -380
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "ae9923c1-ecc6-501b-b37a-a7086d7a518a",
+      "name": "Run example",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Edit before running. Listed ids are replayed regardless of class; with ids\n// empty, open dead letters are selected by error class.\nreturn [{ json: {\n  ids: [],\n  error_class: 'transient',\n  limit: 20,\n  note: `manual replay ${new Date().toISOString()}`,\n} }];\n"
+      },
+      "id": "0de43cf0-8753-5e11-b0d8-0919c5c09ea9",
+      "name": "Replay selection",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM resilience.replay_dead_letters(NULLIF($1, '')::bigint[], NULLIF($2, ''), $3::int, 3, $4);",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ [ $json.ids.length ? '{' + $json.ids.join(',') + '}' : '', $json.ids.length ? '' : ($json.error_class ?? ''), $json.limit, $json.note ] }}"
+        }
+      },
+      "id": "efd16050-0d06-55cf-b2d1-9ff2c5311ffc",
+      "name": "Requeue dead letters",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        440,
+        0
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(i => i.json).filter(r => r.dead_letter_id);\nconst byAction = {};\nfor (const r of rows) byAction[r.action] = (byAction[r.action] ?? 0) + 1;\nreturn [{ json: { selected: rows.length, by_action: byAction } }];\n"
+      },
+      "id": "41e721b3-ee14-50b0-acb7-f8b41a3f1679",
+      "name": "Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Run example": {
+      "main": [
+        [
+          {
+            "node": "Replay selection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Replay selection": {
+      "main": [
+        [
+          {
+            "node": "Requeue dead letters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Requeue dead letters": {
+      "main": [
+        [
+          {
+            "node": "Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "id": "RPdlqReplay00001",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

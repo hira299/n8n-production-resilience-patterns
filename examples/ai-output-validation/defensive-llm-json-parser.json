@@ -1,0 +1,188 @@
+{
+  "name": "Defensive LLM JSON parsing",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Defensive LLM JSON parsing\n\n**Origin:** Derived from the Clean_AI_Output node in Hira Ahmed's Competitor Intelligence & SEO pipeline (public repo). Field validation was added, and the node returns a verdict instead of throwing, so one bad response does not stop the batch.\n\n**Run it:** Execute it. Six simulated model outputs go through the parser: three are accepted, three are rejected with reasons and recorded as dead letters. Replace Simulated model outputs with your LLM node.\n\nConnect the Postgres nodes to a credential for the `resilience` database after import.",
+        "height": 300,
+        "width": 460,
+        "color": 7
+      },
+      "id": "9b5f2d05-08b9-53d8-9d9f-5bf8622e1ea1",
+      "name": "About this example",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        -380
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "6936e2a4-de20-5d83-ae6f-86d2438a408c",
+      "name": "Run example",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Stand-ins for real model responses, covering failure shapes seen in practice.\nconst fence = '`'.repeat(3);\nreturn [\n  { case: 'clean array', raw: '[{\"title\":\"Pricing guide\",\"target_keyword\":\"n8n pricing\",\"search_intent\":\"commercial\"}]' },\n  { case: 'markdown fence', raw: fence + 'json\\n[{\"title\":\"Setup\",\"target_keyword\":\"self-host n8n\",\"search_intent\":\"informational\"}]\\n' + fence },\n  { case: 'single object', raw: '{\"title\":\"Error handling\",\"target_keyword\":\"n8n error trigger\",\"search_intent\":\"informational\"}' },\n  { case: 'truncated', raw: '[{\"title\":\"Retries\",\"target_keyword\":\"n8n retry' },\n  { case: 'prose only', raw: 'Sure! Here are some great content ideas for your site.' },\n  { case: 'wrong fields', raw: '[{\"title\":\"Queues\",\"keyword\":\"n8n queue mode\",\"search_intent\":\"curious\"}]' },\n].map(json => ({ json }));\n"
+      },
+      "id": "4290d3de-d5bf-5d13-b932-d861ced09c63",
+      "name": "Simulated model outputs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const REQUIRED = { title: 'string', target_keyword: 'string', search_intent: 'string' };\nconst INTENTS = new Set(['informational', 'commercial', 'transactional', 'navigational']);\n\n// Find the text wherever the model node put it.\nconst raw = String($json.raw ?? $json.text ?? $json.output ?? '');\nconst errors = [];\nlet parsed;\n\n// Strip markdown fences and anything before the first bracket.\nconst cleaned = raw.replace(/```(?:json)?/gi, '').trim();\nconst start = cleaned.search(/[\\[{]/);\nif (start === -1) {\n  errors.push('no JSON found in model output');\n} else {\n  try {\n    parsed = JSON.parse(cleaned.slice(start));\n  } catch (e) {\n    errors.push(`invalid JSON: ${e.message}`);\n  }\n}\n\n// Accept a single object as a one-item array, as the original parser did.\nconst records = parsed === undefined ? [] : (Array.isArray(parsed) ? parsed : [parsed]);\nif (parsed !== undefined && records.length === 0) errors.push('empty array');\n\nrecords.forEach((r, i) => {\n  if (typeof r !== 'object' || r === null) { errors.push(`item ${i}: not an object`); return; }\n  for (const [field, type] of Object.entries(REQUIRED)) {\n    if (typeof r[field] !== type || String(r[field]).trim() === '') errors.push(`item ${i}: ${field} missing or not a ${type}`);\n  }\n  if (typeof r.search_intent === 'string' && !INTENTS.has(r.search_intent.toLowerCase())) {\n    errors.push(`item ${i}: unexpected search_intent \"${r.search_intent}\"`);\n  }\n});\n\nreturn {\n  json: {\n    case: $json.case ?? null,\n    valid: errors.length === 0,\n    errors,\n    records: errors.length === 0 ? records : [],\n    raw_preview: raw.slice(0, 300),\n  },\n};\n",
+        "mode": "runOnceForEachItem"
+      },
+      "id": "11ba5b4b-48ef-56b9-9ecc-069bfe3314db",
+      "name": "Parse and validate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d80b6e14-a36a-5b1a-9e6c-24a64eae252a",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "633db911-06e3-5d87-9051-61b8dea5682b",
+      "name": "Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "6b6959c0-21bd-5bcd-907a-935be24995c9",
+      "name": "Accepted output",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        880,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT resilience.record_dead_letter($1, $2, $3, $4, $5, NULLIF($6, '')::jsonb, NULLIF($7, '')) AS dead_letter_id;",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ [ $workflow.name, 'Parse and validate', $execution.id, $json.errors.join('; '), 'transient', JSON.stringify({ case: $json.case, errors: $json.errors, raw_preview: $json.raw_preview }), '' ] }}"
+        }
+      },
+      "id": "b8396ff2-ac0f-5076-ab6d-0ae14fae564b",
+      "name": "Record rejected output",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        880,
+        100
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": {
+    "Run example": {
+      "main": [
+        [
+          {
+            "node": "Simulated model outputs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Simulated model outputs": {
+      "main": [
+        [
+          {
+            "node": "Parse and validate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse and validate": {
+      "main": [
+        [
+          {
+            "node": "Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid?": {
+      "main": [
+        [
+          {
+            "node": "Accepted output",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record rejected output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "id": "RPllmOutputParse",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

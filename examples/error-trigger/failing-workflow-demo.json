@@ -1,0 +1,111 @@
+{
+  "name": "Failing workflow (error handler demo)",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Failing workflow (error handler demo)\n\n**Origin:** New demonstration example.\n\n**Run it:** Import the global error handler first; this workflow's Error Workflow setting points at it. Error workflows do not run for manual executions, so activate this workflow and POST anything to /webhook/resilience/fail-demo. A dead letter appears in resilience.dead_letters.\n\nConnect the Postgres nodes to a credential for the `resilience` database after import.",
+        "height": 300,
+        "width": 460,
+        "color": 7
+      },
+      "id": "c94838b7-b1bb-5e97-9ad0-9b672a2e4fa5",
+      "name": "About this example",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        -380
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "f7adfd06-cb35-5013-8ab7-ffe5ad7bc622",
+      "name": "Run example",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "resilience/fail-demo",
+        "options": {}
+      },
+      "id": "eb911570-e039-5082-8f40-d4cc8e8e1c75",
+      "name": "Receive request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        200
+      ],
+      "webhookId": "5b0e7f3a-2d64-4c8e-8f19-7a3c1d2e9b40"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://mock-api:8080/deliver",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Idempotency-Key",
+              "value": "={{ 'failing-demo-' + $execution.id }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ simulate: 'permanent' }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "9fc19740-b695-5287-b9b6-1aad6d644e33",
+      "name": "Send invalid payload",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        100
+      ]
+    }
+  ],
+  "connections": {
+    "Run example": {
+      "main": [
+        [
+          {
+            "node": "Send invalid payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Receive request": {
+      "main": [
+        [
+          {
+            "node": "Send invalid payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "RPerrorHandler01"
+  },
+  "pinData": {},
+  "id": "RPfailingDemo001",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

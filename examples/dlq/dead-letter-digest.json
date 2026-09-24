@@ -1,0 +1,203 @@
+{
+  "name": "Dead-letter digest",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Dead-letter digest\n\n**Origin:** New demonstration example.\n\n**Run it:** Execute it to see open dead letters grouped by source and error class. Enable the alert node to deliver the digest.\n\nConnect the Postgres nodes to a credential for the `resilience` database after import.",
+        "height": 300,
+        "width": 460,
+        "color": 7
+      },
+      "id": "dc00bfd0-5c46-53e2-a33d-f5b3d8b9a7d0",
+      "name": "About this example",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        -380
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "ca81be60-3a9c-5cdd-bc61-03c60afce79d",
+      "name": "Run now",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 8
+            }
+          ]
+        }
+      },
+      "id": "5a8f136a-41eb-56b3-ba02-2f791352c8e6",
+      "name": "Every morning",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT source_workflow, error_class,\n       count(*)::int         AS open_count,\n       sum(occurrences)::int AS occurrences,\n       min(first_seen_at)    AS oldest,\n       max(last_seen_at)     AS newest\nFROM resilience.dead_letters\nWHERE status IN ('open', 'replaying')\nGROUP BY source_workflow, error_class\nORDER BY open_count DESC;",
+        "options": {
+          "queryBatching": "independently"
+        }
+      },
+      "id": "6dd3daed-4e36-5fe4-a391-0a741d8a523c",
+      "name": "Open dead letters",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        240,
+        100
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(i => i.json).filter(r => r.source_workflow);\nconst total = rows.reduce((n, r) => n + r.open_count, 0);\nconst lines = rows.map(r => `- ${r.source_workflow} [${r.error_class}]: ${r.open_count} open (${r.occurrences} occurrences), oldest ${new Date(r.oldest).toISOString()}`);\nreturn [{ json: { total_open: total, groups: rows.length, text: total ? `${total} open dead letters\\n${lines.join('\\n')}` : 'No open dead letters.' } }];\n"
+      },
+      "id": "71ad183d-7e2a-5f40-8f24-db0ad020fc1c",
+      "name": "Build digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "5f68e54b-4103-5aec-82e7-1e04ad425f3e",
+              "leftValue": "={{ $json.total_open }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "ec1d8f90-8aed-5278-b40c-0efedcc1590c",
+      "name": "Anything open?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        680,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://YOUR_ALERT_WEBHOOK_URL",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: $json.text }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "1d7b803e-84fe-5ab1-b098-f4b9a661250e",
+      "name": "Send digest (configure, then enable)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        900,
+        0
+      ],
+      "disabled": true
+    }
+  ],
+  "connections": {
+    "Run now": {
+      "main": [
+        [
+          {
+            "node": "Open dead letters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every morning": {
+      "main": [
+        [
+          {
+            "node": "Open dead letters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Open dead letters": {
+      "main": [
+        [
+          {
+            "node": "Build digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build digest": {
+      "main": [
+        [
+          {
+            "node": "Anything open?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anything open?": {
+      "main": [
+        [
+          {
+            "node": "Send digest (configure, then enable)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "id": "RPdlqDigest00001",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

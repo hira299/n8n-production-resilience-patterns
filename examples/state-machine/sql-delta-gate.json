@@ -1,0 +1,123 @@
+{
+  "name": "Delta gate in SQL with outbox alerts",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Delta gate in SQL with outbox alerts\n\n**Origin:** New demonstration example: a hardened variant of the guardrail pattern. The read, compare, write, and alert enqueue happen in one database transaction.\n\n**Run it:** Execute it, then run the job worker to deliver the alert jobs it created.\n\nConnect the Postgres nodes to a credential for the `resilience` database after import.",
+        "height": 300,
+        "width": 460,
+        "color": 7
+      },
+      "id": "bcc5bd1a-747d-5429-8a5b-d2d0e61d5836",
+      "name": "About this example",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        -380
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "8d95e7bc-8b66-5edc-b914-1b23552680d8",
+      "name": "Run example",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Replace with your real source. Metric is a percentage of budget used.\nreturn [\n  { entity_id: 'project-alpha', metric: 45 },\n  { entity_id: 'project-beta', metric: 88 },\n  { entity_id: 'project-gamma', metric: 130 },\n].map(json => ({ json }));\n"
+      },
+      "id": "e8ea1bc1-8726-543e-b32a-ee752d52bbbd",
+      "name": "Readings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM resilience.apply_reading($1, $2::numeric);",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ [ $json.entity_id, $json.metric ] }}"
+        }
+      },
+      "id": "48c362c1-eeba-5264-8339-0bda1f783802",
+      "name": "Apply reading",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        440,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(i => i.json);\nreturn [{ json: {\n  changed: rows.filter(r => r.changed).map(r => `${r.entity_id}: ${r.previous_state} -> ${r.new_state}`),\n  alert_jobs: rows.filter(r => r.alert_job_id).map(r => r.alert_job_id),\n} }];\n"
+      },
+      "id": "fe246809-df91-5645-a33e-6d943227a406",
+      "name": "Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Run example": {
+      "main": [
+        [
+          {
+            "node": "Readings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Readings": {
+      "main": [
+        [
+          {
+            "node": "Apply reading",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply reading": {
+      "main": [
+        [
+          {
+            "node": "Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "id": "RPdeltaGate00001",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

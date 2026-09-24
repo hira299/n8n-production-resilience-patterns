@@ -1,0 +1,132 @@
+{
+  "name": "Global error handler",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Global error handler\n\n**Origin:** New demonstration example.\n\n**Run it:** Select this workflow as the Error Workflow in the settings of other workflows. It runs when they fail in production (trigger-started) executions. In n8n 2.x, publish this workflow, or it will not run.\n\nConnect the Postgres nodes to a credential for the `resilience` database after import.",
+        "height": 300,
+        "width": 460,
+        "color": 7
+      },
+      "id": "e8c4e898-2616-5bbb-807e-ee4c60f8a5da",
+      "name": "About this example",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        -380
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "eb4eb6bb-a676-56d5-8bcc-0f433f35ddd8",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// The Error Trigger payload has \"execution\" for normal failures and \"trigger\"\n// when the trigger node itself failed. Only metadata is stored: input data can\n// contain personal or secret values, so it is deliberately not copied here.\nconst e = $json;\nconst execution = e.execution ?? {};\nconst trigger = e.trigger ?? {};\nconst err = execution.error ?? trigger.error ?? {};\nconst message = String(err.message ?? 'unknown error').slice(0, 2000);\n\n// Coarse classification. Tune the patterns to the errors your workflows produce.\nconst text = `${message} ${err.description ?? ''}`.toLowerCase();\nlet errorClass = 'unknown';\nif (/timeout|timed out|econnreset|econnrefused|socket hang up|\\b50[234]\\b|\\b429\\b|rate limit/.test(text)) errorClass = 'transient';\nelse if (/\\b40[0134]\\b|\\b422\\b|validation|invalid|not found|unauthorized|forbidden/.test(text)) errorClass = 'permanent';\n\nreturn [{\n  json: {\n    source_workflow: e.workflow?.name ?? 'unknown workflow',\n    source_node: execution.lastNodeExecuted ?? trigger.node?.name ?? null,\n    execution_id: execution.id ? String(execution.id) : null,\n    error_message: message,\n    error_class: errorClass,\n    context: {\n      workflow_id: e.workflow?.id ?? null,\n      mode: execution.mode ?? trigger.mode ?? null,\n      execution_url: execution.url ?? null,\n      retry_of: execution.retryOf ?? null,\n      trigger_failed: Boolean(e.trigger),\n    },\n  },\n}];\n"
+      },
+      "id": "3a265762-3a72-579f-86bb-a955d180a6a0",
+      "name": "Build dead letter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT resilience.record_dead_letter($1, $2, $3, $4, $5, NULLIF($6, '')::jsonb, NULLIF($7, '')) AS dead_letter_id;",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ [ $json.source_workflow, $json.source_node ?? '', $json.execution_id ?? '', $json.error_message, $json.error_class, JSON.stringify($json.context), '' ] }}"
+        }
+      },
+      "id": "1d2216b9-1658-5087-afb7-49a92c0803e3",
+      "name": "Store dead letter",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        440,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://YOUR_ALERT_WEBHOOK_URL",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: `n8n failure in ${$('Build dead letter').first().json.source_workflow} at ${$('Build dead letter').first().json.source_node}: ${$('Build dead letter').first().json.error_message}` }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "407aa9ef-becb-50d4-9da2-c8f2d2a105f7",
+      "name": "Alert (configure, then enable)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        0
+      ],
+      "disabled": true,
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Build dead letter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build dead letter": {
+      "main": [
+        [
+          {
+            "node": "Store dead letter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store dead letter": {
+      "main": [
+        [
+          {
+            "node": "Alert (configure, then enable)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "id": "RPerrorHandler01",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}
